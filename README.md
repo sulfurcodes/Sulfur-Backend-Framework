@@ -2,15 +2,19 @@
 
 A lightweight backend framework built from scratch with Python.
 
-Sulfur is an educational backend framework created to explore how web frameworks work internally. It is built from the ground up to understand concepts such as WSGI, HTTP request handling, routing, and server architecture.
+Sulfur is an educational project focused on understanding how backend frameworks work internally — from WSGI and HTTP handling to routing, middleware, and response processing.
 
 ## Current Features
 
 * WSGI application interface
-* Basic HTTP request handling
+* HTTP request handling through the WSGI `environ`
 * Route registration
-* `GET` routes
-* Development reload support with Gunicorn
+* `GET`, `POST`, and `DELETE` routes
+* Dynamic route parameters
+* Global middleware
+* Route-specific middleware
+* Basic response abstraction
+* Gunicorn development reload support
 
 ## Example
 
@@ -19,33 +23,72 @@ from src.sulfur import Sulfur
 
 app = Sulfur()
 
-@app.get("/users")
-def getUsers(req, res):
-    res["status_code"] = "200 OK"
-    res["headers"] = []
-    res["text"] = "Sulfurcodes"
+
+@app.get("/users/{id}")
+def get_user(req, res, id):
+    res.send(f"User ID: {id}", 200)
+
+
+@app.post("/users")
+def create_user(req, res):
+    res.send("User created", 201)
+
+
+@app.delete("/users")
+def delete_user(req, res):
+    res.send("User deleted", 200)
 ```
 
-Run the application with:
+## Middleware
+
+Sulfur supports both global and route-specific middleware.
+
+### Global Middleware
+
+```python
+def logger(environ):
+    print("Request received")
+
+
+app = Sulfur(middlewares=[logger])
+```
+
+### Route-Specific Middleware
+
+```python
+def auth(environ):
+    print("Checking authentication")
+
+
+@app.get("/users/{id}", middleware=[auth])
+def get_user(req, res, id):
+    res.send(f"User ID: {id}", 200)
+```
+
+## Running the Example
+
+Create and activate a virtual environment, install the dependencies, then run:
 
 ```bash
-gunicorn examples.app:app --reload
+gunicorn example.app:app --reload
 ```
+
+The example application demonstrates routing, path parameters, middleware, and responses.
 
 ## Project Structure
 
 ```text
-Sulfur Framework/
-├── examples/
-│   └── app.py
+Sulfur-Backend-Framework/
+├── example/
+│   ├── app.py
+│   ├── controllers.py
+│   └── middlewares.py
 ├── src/
-│   ├── sulfur.py
-│   └── router.py
-└── ...
+│   ├── __init__.py
+│   ├── request.py
+│   ├── response.py
+│   ├── router.py
+│   └── sulfur.py
+├── .gitignore
+└── LICENSE
 ```
-
-## Goal
-
-Sulfur is primarily a learning project. The goal is to build a backend framework from scratch while understanding the concepts and architecture behind modern Python web frameworks.
-
-More features will be added as the framework evolves.

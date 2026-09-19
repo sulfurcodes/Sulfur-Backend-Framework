@@ -1,4 +1,4 @@
-from src.sulfur import Sulfur
+from sulfur import Sulfur
 from .controllers import getUsers, postUsers, deleteUsers
 from .middlewares import globalMiddleware, getMiddleware, postMiddleware, deleteMiddleware
 

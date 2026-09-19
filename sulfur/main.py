@@ -4,7 +4,7 @@ from .router import Router
 from .response import Response
 
 class Sulfur:
-    def __init__(self, middlewares = []) -> None:
+    def __init__(self, middlewares = None) -> None:
         self.router = Router()
         self.middlewares = middlewares or []
 
