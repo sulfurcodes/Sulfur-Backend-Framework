@@ -10,13 +10,19 @@ _STATUS_TEXT = {
 
 
 class Response:
-    """WSGI response wrapper with dict backward-compat for old handlers."""
+    """WSGI response wrapper with dict backward-compat + upstream send/as_wsgi API."""
 
-    def __init__(self, body="", status=200, headers=None, content_type="text/plain"):
+    def __init__(self, body="", status=200, headers=None, content_type="text/plain",
+                 status_code=None, text=None):
+        # upstream compat: Response(status_code='...', text='...')
+        if status_code is not None and status == 200:
+            status = self._parse_status(status_code)
         self.status = status
         self.headers = list(headers) if headers else []
         self._body = b""
         self._content_type_set = False
+        if text is not None and not body:
+            body = text
         if body is not None:
             self.set_body(body, content_type)
 
@@ -62,11 +68,50 @@ class Response:
         if lname == "content-type":
             self._content_type_set = True
 
+    # -- upstream API: res.send(text, status) + res.as_wsgi(start_response) --
+    def send(self, text="", status_code="200 OK"):
+        if isinstance(text, (dict, list)):
+            self.json(text)
+        elif isinstance(text, bytes):
+            self._body = text
+        else:
+            self.text = text if isinstance(text, str) else str(text)
+        self.status = self._parse_status(status_code)
+        return self
+
+    def as_wsgi(self, start_response):
+        status, headers, body = self.to_wsgi()
+        start_response(status, headers)
+        return body
+
     # -- WSGI --
     @property
     def status_line(self) -> str:
         text = _STATUS_TEXT.get(self.status, "OK")
         return f"{self.status} {text}"
+
+    @property
+    def status_code(self) -> str:
+        # upstream expects string like '200 OK'
+        return self.status_line
+
+    @status_code.setter
+    def status_code(self, value):
+        self.status = self._parse_status(value)
+
+    @staticmethod
+    def _parse_status(value):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            try:
+                return int(value.split()[0])
+            except (ValueError, IndexError):
+                return 200
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return 200
 
     def to_wsgi(self):
         headers = list(self.headers)
@@ -86,15 +131,7 @@ class Response:
 
     def __setitem__(self, key, value):
         if key == "status_code":
-            if isinstance(value, int):
-                self.status = value
-            elif isinstance(value, str):
-                try:
-                    self.status = int(value.split()[0])
-                except (ValueError, IndexError):
-                    self.status = 200
-            else:
-                self.status = int(value)
+            self.status = self._parse_status(value)
         elif key == "headers":
             self.headers = list(value) if value else []
         elif key == "text":

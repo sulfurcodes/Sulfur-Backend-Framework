@@ -54,3 +54,10 @@ class Request:
                 return None
             self._json_cache = _json.loads(self.text)
         return self._json_cache
+
+    # upstream compat: handlers receiving environ dict can also accept Request
+    def __getitem__(self, key):
+        return self.environ[key]
+
+    def get(self, key, default=None):
+        return self.environ.get(key, default)

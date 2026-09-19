@@ -1,46 +1,59 @@
+import types
 from .router import Router
 from .request import Request
 from .response import Response
 
 
 class Sulfur:
-    def __init__(self) -> None:
+    """Merged app: upstream global+route middlewares and POST/DELETE,
+    plus Request/Response objects, full REST verbs, path params,
+    use()/before/after hooks, CORS/logger, and 404/405/500 handling."""
+
+    def __init__(self, middlewares=None) -> None:
         self.router = Router()
-        self.middlewares = []
+        # upstream style: Sulfur(middlewares=[fn]) where fn(environ)
+        self.middlewares = list(middlewares) if middlewares else []
         self._not_found_handler = None
         self._error_handler = None
         self._exception_handlers = {}
 
-    # -- route decorators (full REST verbs) --
-    def get(self, path=None):
-        return self.router.get(path)
+    # -- route decorators (support both `middleware=` and `middlewares=`) --
+    def get(self, path=None, middleware=None, middlewares=None):
+        mw = _as_list(middleware) + _as_list(middlewares)
+        return self.router.get(path, middlewares=mw or None)
 
-    def post(self, path=None):
-        return self.router.post(path)
+    def post(self, path=None, middleware=None, middlewares=None):
+        mw = _as_list(middleware) + _as_list(middlewares)
+        return self.router.post(path, middlewares=mw or None)
 
-    def put(self, path=None):
-        return self.router.put(path)
+    def put(self, path=None, middleware=None, middlewares=None):
+        mw = _as_list(middleware) + _as_list(middlewares)
+        return self.router.put(path, middlewares=mw or None)
 
-    def patch(self, path=None):
-        return self.router.patch(path)
+    def patch(self, path=None, middleware=None, middlewares=None):
+        mw = _as_list(middleware) + _as_list(middlewares)
+        return self.router.patch(path, middlewares=mw or None)
 
-    def delete(self, path=None):
-        return self.router.delete(path)
+    def delete(self, path=None, middleware=None, middlewares=None):
+        mw = _as_list(middleware) + _as_list(middlewares)
+        return self.router.delete(path, middlewares=mw or None)
 
-    def route(self, path=None, methods=None):
-        return self.router.route(path, methods=methods)
+    def route(self, path=None, methods=None, middleware=None, middlewares=None):
+        mw = _as_list(middleware) + _as_list(middlewares)
+        return self.router.route(path, methods=methods, middlewares=mw or None)
 
-    # -- middleware + error hooks (boost #1) --
+    # -- middleware + error hooks --
     def use(self, mw):
-        """Register middleware. Styles supported:
-        mw(req, res, next) -> return next() or return Response to short-circuit.
-        Also supports mw(req, res), mw(req, next), mw(req) (auto-continues if returns None).
+        """Register middleware. Styles:
+        - upstream: mw(environ)
+        - chain: mw(req, res, next) -> return next() or Response to short-circuit.
         """
+        if not isinstance(mw, types.FunctionType):
+            raise ValueError("You can only pass functions as middlewares")
         self.middlewares.append(mw)
         return mw
 
     def before_request(self, fn):
-        """Simple before-hook: fn(req) -> return Response to block, else None to continue."""
         def wrapper(req, res, next):
             out = fn(req) if _arity(fn) <= 1 else fn(req, res)
             if out is not None:
@@ -50,7 +63,6 @@ class Sulfur:
         return fn
 
     def after_request(self, fn):
-        """Simple after-hook: fn(req, resp) -> resp (may mutate)."""
         def wrapper(req, res, next):
             resp = next()
             out = fn(req, resp)
@@ -59,17 +71,14 @@ class Sulfur:
         return fn
 
     def set_404(self, handler):
-        """Custom 404: handler(req) -> anything coercible."""
         self._not_found_handler = handler
         return handler
 
     def set_error(self, handler):
-        """Custom 500: handler(req, exc) -> anything coercible."""
         self._error_handler = handler
         return handler
 
     def add_exception_handler(self, exc_class, handler):
-        """Handler for specific exception: handler(req, exc) -> anything."""
         self._exception_handlers[exc_class] = handler
         return handler
 
@@ -78,19 +87,26 @@ class Sulfur:
         res = Response()
 
         def dispatch():
-            return self._dispatch_route(req, res)
+            return self._dispatch_route(req, res, environ)
 
         try:
-            final = self._run_chain(0, req, res, dispatch)
+            final = self._run_chain(0, req, res, environ, dispatch)
         except Exception as exc:
             final = self._handle_error(req, res, exc)
+        # support both Response APIs
+        if hasattr(final, "as_wsgi"):
+            try:
+                return final.as_wsgi(start_response)
+            except TypeError:
+                pass
         status, headers, body = final.to_wsgi()
         start_response(status, headers)
         return body
 
     # -- internals --
-    def _dispatch_route(self, req, res):
-        handler, path_params = self.router.match(req.method, req.path)
+    def _dispatch_route(self, req, res, environ):
+        matched = self.router.match(req.method, req.path)
+        handler, path_params, route_mw = matched if len(matched) == 3 else (*matched, [])
         req.path_params = path_params if handler else {}
 
         if handler is None:
@@ -102,26 +118,32 @@ class Sulfur:
                 return tmp
             if self._not_found_handler:
                 try:
-                    out = self._invoke(self._not_found_handler, req, res)
+                    out = self._invoke(self._not_found_handler, req, res, {})
                     return self._coerce_result(out, res)
                 except Exception as exc:
                     return self._handle_error(req, res, exc)
-            tmp = Response()
-            tmp.status = 404
+            tmp = Response(status=404)
             tmp.json({"error": f"Route {req.path} not found"})
             return tmp
 
-        # fresh response per request (don't leak headers across requests)
+        # per-route middlewares (upstream style mw(environ) or chain style)
+        for mw in route_mw:
+            try:
+                self._invoke_mw_simple(mw, req, res, environ)
+            except Exception as exc:
+                return self._handle_error(req, res, exc)
+
         route_res = Response()
         try:
-            result = self._invoke(handler, req, route_res)
+            result = self._invoke(handler, req, route_res, path_params)
+            # upstream handlers mutate res via send() and return None
+            if result is None and (route_res._body or route_res.status != 200):
+                return route_res
             return self._coerce_result(result, route_res)
         except Exception as exc:
-            # return (not raise) so middleware post-processing (CORS, logging)
-            # still runs as the chain unwinds
             return self._handle_error(req, route_res, exc)
 
-    def _run_chain(self, idx, req, res, dispatch):
+    def _run_chain(self, idx, req, res, environ, dispatch):
         if idx >= len(self.middlewares):
             return dispatch()
         mw = self.middlewares[idx]
@@ -129,28 +151,25 @@ class Sulfur:
 
         def next_fn():
             try:
-                r = self._run_chain(idx + 1, req, res, dispatch)
+                r = self._run_chain(idx + 1, req, res, environ, dispatch)
             except Exception as exc:
-                # inner middleware/route raised: convert to error response
-                # so outer middleware can still post-process (e.g. CORS headers)
                 r = self._handle_error(req, res, exc)
             box["v"] = r
             return r
 
+        # upstream 1-arg mw(environ): run for side effects, auto-continue
+        if _is_upstream_mw(mw):
+            mw(environ)
+            return next_fn()
+
         out = self._invoke_mw(mw, req, res, next_fn)
         if out is None:
-            # auto-continue for before-style middleware that returned None
             if "v" in box:
                 return box["v"]
-            return self._run_chain(idx + 1, req, res, dispatch)
-        coerced = self._coerce_result(out, out if isinstance(out, Response) else res)
-        # if middleware called next() but also returned None-ish wrapper, prefer next result?
-        # _invoke_mw returns next result directly when mw returns next()'s value, so coerced is correct.
-        # Edge: mw called next() internally but returned None -> handled above via box.
-        return coerced if not isinstance(out, Response) or True else out
+            return self._run_chain(idx + 1, req, res, environ, dispatch)
+        return self._coerce_result(out, out if isinstance(out, Response) else res)
 
     def _handle_error(self, req, res, exc):
-        # specific exception handlers first (isinstance walk)
         for exc_class, h in self._exception_handlers.items():
             try:
                 if isinstance(exc, exc_class):
@@ -170,12 +189,53 @@ class Sulfur:
         return err
 
     @staticmethod
-    def _invoke(handler, req, res):
-        """Supports handler(req) / handler(req, res) and legacy handler(environ, res_dict)."""
-        n = _arity(handler)
+    def _invoke(handler, req, res, path_params=None):
+        """Supports handler(req), handler(req,res), handler(req,res,**params),
+        and legacy handler(environ, res_dict). Request supports environ access."""
+        import inspect
+        path_params = path_params or {}
+        try:
+            sig = inspect.signature(handler)
+            params = list(sig.parameters.values())
+        except (ValueError, TypeError):
+            return handler(req, res)
+        n = len(params)
+        names = [p.name for p in params]
+        # upstream style with path kwargs: def getUsers(req, res, id)
+        if n >= 3 or (n == 2 and any(k in names for k in path_params)):
+            kwargs = {k: v for k, v in path_params.items() if k in names}
+            if n >= 3 and len(kwargs) < len(path_params):
+                # pass all path params positionally/by name fallback
+                kwargs = dict(path_params)
+            try:
+                return handler(req, res, **kwargs)
+            except TypeError:
+                pass
         if n <= 1:
             return handler(req)
         return handler(req, res)
+
+    @staticmethod
+    def _invoke_mw_simple(mw, req, res, environ):
+        # per-route mw: prefer mw(environ), else mw(req), mw(req,res), chain style
+        n = _arity(mw)
+        import inspect
+        try:
+            names = list(inspect.signature(mw).parameters.keys())
+        except (ValueError, TypeError):
+            names = []
+        if n <= 1:
+            try:
+                return mw(environ)
+            except Exception:
+                return mw(req)
+        if n == 2 and "next" not in names:
+            try:
+                return mw(req, res)
+            except Exception:
+                return mw(environ, res)
+        # chain style without next_fn here: give auto-next that returns None
+        return mw(req, res, lambda: None)
 
     @staticmethod
     def _invoke_mw(mw, req, res, next_fn):
@@ -190,20 +250,17 @@ class Sulfur:
         if n >= 3 or (n == 2 and has_next):
             return mw(req, res, next_fn)
         if n == 2:
-            # could be (req, res) or (req, next) — decide by name
             if params[1].name == "next":
                 return mw(req, next_fn)
             return mw(req, res)
         if n == 1:
-            name = params[0].name
-            if name == "next":
+            if params[0].name == "next":
                 return next_fn()
             return mw(req)
         return mw()
 
     @staticmethod
     def _coerce_result(result, res: Response) -> Response:
-        """Allows: return str | dict | list | bytes | Response | None (uses mutated res)."""
         if result is None:
             return res
         if isinstance(result, Response):
@@ -228,3 +285,20 @@ def _arity(fn):
         return len(inspect.signature(fn).parameters)
     except (ValueError, TypeError):
         return 2
+
+
+def _is_upstream_mw(mw):
+    import inspect
+    try:
+        params = list(inspect.signature(mw).parameters.values())
+    except (ValueError, TypeError):
+        return False
+    return len(params) == 1 and params[0].name in ("request", "environ", "req", "environment")
+
+
+def _as_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
