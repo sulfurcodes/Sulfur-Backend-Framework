@@ -85,10 +85,10 @@ Sulfur-Backend-Framework/
 │   └── middlewares.py
 ├── sulfur/
 │   ├── __init__.py
+│   ├── main.py
 │   ├── request.py
 │   ├── response.py
-│   ├── router.py
-│   └── main.py
+│   └── router.py
 ├── .gitignore
 └── LICENSE
 ```
