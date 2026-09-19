@@ -1,19 +1,43 @@
+import types
+from parse import parse
 from .router import Router
+from .response import Response
 
 class Sulfur:
-    def __init__(self) -> None:
+    def __init__(self, middlewares = []) -> None:
         self.router = Router()
+        self.middlewares = middlewares or []
 
-    def get(self, path=None):
-            return self.router.get(path)
-
+    def get(self, path=None, middleware = None):
+        return self.router.get(path, middleware)
+    
+    def post(self, path=None, middleware = None):
+        return self.router.post(path, middleware)
+    
+    def delete(self, path=None, middleware = None):
+        return self.router.delete(path, middleware)
+    
     def __call__(self, environ, start_response) -> any:
-        reponse = {}
-        for path, handler_dict in self.router.routes.items():
-            for request_method, handler in handler_dict.items():
-                if environ['PATH_INFO'] == path and environ['REQUEST_METHOD'] == request_method:
-                    handler(environ, reponse)
-                    start_response(reponse['status_code'], headers = reponse['headers'])
-                    return [(reponse['text']).encode()]
+        reponse = Response()
 
+        for middleware in self.middlewares:
+            if isinstance(middleware, types.FunctionType):
+                middleware(environ)
+            else:
+                raise ValueError('You can only pass functions as middlewares')
+
+        for path, handler_dict in self.router.routes.items():
+            route = parse(path, environ['PATH_INFO'])
+            for request_method, handler in handler_dict.items():
+                if route and environ['REQUEST_METHOD'] == request_method:
+                    route_mw_list = self.router.middleware_for_routes[path][request_method]
+                    for mw in route_mw_list:
+                        if isinstance(mw, types.FunctionType):
+                            mw(environ)
+                        else:
+                            raise ValueError('You can only pass functions are middlewares')
+                    handler(environ, reponse, **route.named)
+                    return reponse.as_wsgi(start_response)
+                
+        return reponse.as_wsgi(start_response)
     
