@@ -9,7 +9,7 @@ STATUS_MESSAGES = {
 }
 
 class Response:
-    def __init__(self, status_code = '404 Missing Not Found', text = 'Route Not Found') -> None:
+    def __init__(self, status_code = '200 OK', text = '') -> None:
         self.status_code = status_code
         self.text = text
         self.headers = []

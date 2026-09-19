@@ -19,7 +19,7 @@ class Sulfur:
         return self.router.delete(path, middleware)
     
     def __call__(self, environ, start_response) -> any:
-        reponse = Response()
+        response = Response()
         request = Request(environ)
 
         for middleware in self.middlewares:
@@ -37,9 +37,9 @@ class Sulfur:
                         if isinstance(mw, types.FunctionType):
                             mw(request)
                         else:
-                            raise ValueError('You can only pass functions are middlewares')
-                    handler(request, reponse, **route.named)
-                    return reponse.as_wsgi(start_response)
-                
-        return reponse.as_wsgi(start_response)
+                            raise ValueError('You can only pass functions as middlewares')
+                    handler(request, response, **route.named)
+                    return response.as_wsgi(start_response)
+        response.send('Route Not Found', 404)        
+        return response.as_wsgi(start_response)
     

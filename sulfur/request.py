@@ -1,12 +1,9 @@
-from collections import defaultdict
+from urllib.parse import parse_qs
 
 class Request:
     def __init__(self, environ) -> None:
-        self.query = defaultdict()
         for key, val in environ.items():
             setattr(self, key.replace('.', '_').lower(), val)
-        if self.query_string:
-            req_queries = self.query_string.split('&')
-            for query in req_queries:
-                query_key, query_val = query.split('=')
-                self.query[query_key] = query_val
+        raw_query = environ.get('QUERY_STRING', '')
+        parsed = parse_qs(raw_query, keep_blank_values=True)
+        self.query = {key: values[-1] for key, values in parsed.items()}
