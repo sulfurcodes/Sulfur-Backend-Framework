@@ -2,6 +2,7 @@ import types
 from parse import parse
 from .router import Router
 from .response import Response
+from .request import Request
 
 class Sulfur:
     def __init__(self, middlewares = None) -> None:
@@ -19,24 +20,25 @@ class Sulfur:
     
     def __call__(self, environ, start_response) -> any:
         reponse = Response()
+        request = Request(environ)
 
         for middleware in self.middlewares:
             if isinstance(middleware, types.FunctionType):
-                middleware(environ)
+                middleware(request)
             else:
                 raise ValueError('You can only pass functions as middlewares')
 
         for path, handler_dict in self.router.routes.items():
-            route = parse(path, environ['PATH_INFO'])
+            route = parse(path, request.path_info)
             for request_method, handler in handler_dict.items():
-                if route and environ['REQUEST_METHOD'] == request_method:
+                if route and request.request_method == request_method:
                     route_mw_list = self.router.middleware_for_routes[path][request_method]
                     for mw in route_mw_list:
                         if isinstance(mw, types.FunctionType):
-                            mw(environ)
+                            mw(request)
                         else:
                             raise ValueError('You can only pass functions are middlewares')
-                    handler(environ, reponse, **route.named)
+                    handler(request, reponse, **route.named)
                     return reponse.as_wsgi(start_response)
                 
         return reponse.as_wsgi(start_response)
