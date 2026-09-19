@@ -83,12 +83,12 @@ Sulfur-Backend-Framework/
 │   ├── app.py
 │   ├── controllers.py
 │   └── middlewares.py
-├── src/
+├── sulfur/
 │   ├── __init__.py
 │   ├── request.py
 │   ├── response.py
 │   ├── router.py
-│   └── sulfur.py
+│   └── main.py
 ├── .gitignore
 └── LICENSE
 ```
